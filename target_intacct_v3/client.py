@@ -32,7 +32,7 @@ class IntacctSink(HotglueSink):
     contacts = None
     payment_terms = None
     previous_stream = None
-    # Intacct entity (LOCATIONID) the requests run in - see in_entity
+    # Intacct entity (LOCATIONID) the requests run in
     entity_id = None
     controlid_list = []
 
@@ -102,9 +102,8 @@ class IntacctSink(HotglueSink):
 
     @contextmanager
     def in_entity(self, entity_id):
-        """Run the requests inside the block in an Intacct entity (its LOCATIONID): a bill created
-        from a top-level session stays outside every entity even when its lines carry the entity's
-        locations. Lookups outside the block keep the default session, which sees every entity."""
+        """A bill created from a top-level session stays outside every entity, even with the
+        entity's locations on its lines."""
         self.entity_id = self.clean_entity_id(entity_id)
         try:
             yield
@@ -112,7 +111,7 @@ class IntacctSink(HotglueSink):
             self.entity_id = None
 
     def _session_location_id(self):
-        """LOCATIONID the current requests log in to - None for the top level."""
+        """None = top level."""
         if self.entity_id:
             return self.entity_id
         location_id = self.config.get("location_id")
@@ -125,7 +124,7 @@ class IntacctSink(HotglueSink):
         return None
 
     def _get_sessions(self) -> dict:
-        """One session per LOCATIONID ("" = top level), shared by all streams of the run."""
+        """One session per LOCATIONID ("" = top level)."""
         if getattr(self._target, "sessions", None) is None:
             self._target.sessions = {}
         return self._target.sessions

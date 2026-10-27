@@ -391,7 +391,6 @@ class APAdjustments(IntacctSink):
                 payload["apadjustmentitems"]["lineitem"].append(item)
 
             payload = clean_convert(payload)
-            # Intacct entity the adjustment is created in (popped before sending)
             payload["entity_id"] = record.get("entityId")
             return payload
         except Exception as e:
@@ -992,7 +991,6 @@ class PurchaseInvoices(IntacctSink):
             return {
                 "payload": {"APBILL": payload},
                 "attachments": record.get("attachments"),
-                # Intacct entity the bill is created in
                 "entity_id": record.get("entityId"),
             }
         except Exception as e:
