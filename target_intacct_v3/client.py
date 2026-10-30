@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import re
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import backoff
@@ -31,6 +32,8 @@ class IntacctSink(HotglueSink):
     contacts = None
     payment_terms = None
     previous_stream = None
+    # Intacct entity (LOCATIONID) the requests run in
+    entity_id = None
     controlid_list = []
 
     @property
@@ -87,11 +90,50 @@ class IntacctSink(HotglueSink):
 
         return request_body
 
+    @staticmethod
+    def clean_entity_id(value):
+        if value is None or (isinstance(value, float) and value != value):
+            return None
+        value = str(value).strip()
+        # ids can come in as floats ("200.0")
+        if value.endswith(".0") and value[:-2].isdigit():
+            value = value[:-2]
+        return value or None
+
+    @contextmanager
+    def in_entity(self, entity_id):
+        """A bill created from a top-level session stays outside every entity, even with the
+        entity's locations on its lines."""
+        self.entity_id = self.clean_entity_id(entity_id)
+        try:
+            yield
+        finally:
+            self.entity_id = None
+
+    def _session_location_id(self):
+        """None = top level."""
+        if self.entity_id:
+            return self.entity_id
+        location_id = self.config.get("location_id")
+        if (
+            self.config.get("use_locations")
+            and location_id
+            and self.name not in ["Suppliers"]
+        ):
+            return location_id
+        return None
+
+    def _get_sessions(self) -> dict:
+        """One session per LOCATIONID ("" = top level)."""
+        if getattr(self._target, "sessions", None) is None:
+            self._target.sessions = {}
+        return self._target.sessions
+
     def login(self):
         user_id = self.config.get("user_id")
         company_id = self.config.get("company_id")
         user_password = self.config.get("user_password")
-        location_id = self.config.get("location_id")
+        location_id = self._session_location_id()
         sender_id = self.config.get("sender_id")
         sender_password = self.config.get("sender_password")
         login_payload = {
@@ -103,11 +145,7 @@ class IntacctSink(HotglueSink):
         # register current stream
         IntacctSink.previous_stream = self.name
 
-        if (
-            self.config.get("use_locations")
-            and location_id
-            and self.name not in ["Suppliers"]
-        ):
+        if location_id:
             login_payload["locationid"] = location_id
 
         request_body = self.get_request_body(sender_id, sender_password, login_payload= login_payload, operation='login')
@@ -121,6 +159,7 @@ class IntacctSink(HotglueSink):
                 session_details = res_json["result"]["data"]["api"]
                 self._target.session_id = session_details["sessionid"]
                 self._target.session_timeout = self._get_session_timeout(res_json)
+                self._get_sessions()[location_id or ""] = (self._target.session_id, self._target.session_timeout)
 
         except requests.RequestException as e:
             raise FatalAPIError(f"Login request failed: {e.__repr__()}")
@@ -141,10 +180,13 @@ class IntacctSink(HotglueSink):
 
     def is_session_valid(self):
         now = round(dt.datetime.now(dt.timezone.utc).timestamp())
+        session = self._get_sessions().get(self._session_location_id() or "")
+        if not session:
+            return False
+        # get_request_body sends the target's current session
+        self._target.session_id, self._target.session_timeout = session
         session_timeout = self._target.session_timeout
         if not self._target.session_id:
-            return False
-        if self.name != IntacctSink.previous_stream:
             return False
         if session_timeout is not None:
             session_timeout = session_timeout.timestamp()

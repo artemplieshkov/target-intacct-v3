@@ -196,12 +196,19 @@ class Suppliers(IntacctSink):
                 "VENDOR": payload,
                 "contacts": self.map_contacts(record.get("contacts")),
                 "attachments": record.get("attachments"),
+                # a vendor created inside an entity can only be updated from that entity's session
+                "entity_id": record.get("entityId"),
             }
         except Exception as e:
             return {"error": e.__repr__()}
 
     def upsert_record(self, record: dict, context: dict) -> None:
         """Process the record."""
+        entity_id = record.pop("entity_id", None) if record else None
+        with self.in_entity(entity_id):
+            return self.upsert_vendor(record, context)
+
+    def upsert_vendor(self, record: dict, context: dict) -> None:
         state_updates = dict()
         if record.get("error"):
             raise Exception(record["error"])
@@ -282,6 +289,8 @@ class APAdjustments(IntacctSink):
     name = "APAdjustment"
 
     def preprocess_record(self, record: dict, context: dict) -> dict:
+        if record.get("entityError"):
+            return {"error": record["entityError"]}
         try:
             payload = {
                 "vendorid": record.get("vendorId"),
@@ -389,6 +398,7 @@ class APAdjustments(IntacctSink):
                 payload["apadjustmentitems"]["lineitem"].append(item)
 
             payload = clean_convert(payload)
+            payload["entity_id"] = record.get("entityId")
             return payload
         except Exception as e:
             return {"error": e.__repr__()}
@@ -398,13 +408,15 @@ class APAdjustments(IntacctSink):
         state_updates = dict()
         if record.get("error"):
             raise Exception(record["error"])
+        entity_id = record.pop("entity_id", None)
         if record:
-            response = self.request_api(
-                "POST", request_data={"create_apadjustment": record}
-            )
-            id = response["key"]
+            with self.in_entity(entity_id):
+                response = self.request_api(
+                    "POST", request_data={"create_apadjustment": record}
+                )
+                id = response["key"]
 
-            state_updates = self.get_record_url("APADJUSTMENT", id, state_updates)
+                state_updates = self.get_record_url("APADJUSTMENT", id, state_updates)
             return id, True, state_updates
 
 
@@ -726,6 +738,8 @@ class PurchaseInvoices(IntacctSink):
     name = "PurchaseInvoices"
 
     def preprocess_record(self, record: dict, context: dict) -> dict:
+        if record.get("entityError"):
+            return {"error": record["entityError"]}
         bill_state = None
         try:
             # Map bill
@@ -984,12 +998,17 @@ class PurchaseInvoices(IntacctSink):
             return {
                 "payload": {"APBILL": payload},
                 "attachments": record.get("attachments"),
+                "entity_id": record.get("entityId"),
             }
         except Exception as e:
             return {"error": e.__repr__()}
 
     def upsert_record(self, record: dict, context: dict) -> None:
         """Process the record."""
+        with self.in_entity((record or {}).get("entity_id")):
+            return self.upsert_bill(record, context)
+
+    def upsert_bill(self, record: dict, context: dict) -> None:
         state_updates = {}
 
         if not record:
@@ -999,7 +1018,8 @@ class PurchaseInvoices(IntacctSink):
             raise Exception(f"Record error: {record['error']}")
 
         try:
-            payload, attachments = record.values()
+            payload = record["payload"]
+            attachments = record.get("attachments")
             record_id = payload["APBILL"].get("RECORDID", None)
         except KeyError as e:
             raise KeyError(f"Missing expected key in record: {e}")
